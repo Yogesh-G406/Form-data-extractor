@@ -3,12 +3,15 @@ import shutil
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from sqlalchemy.orm import Session
+from sqlalchemy import select
 from agent import HandwritingExtractionAgent
+from database import get_db, FormData
 
 # Load .env file from the backend directory
 env_path = Path(__file__).parent / ".env"
@@ -25,6 +28,24 @@ agent = None
 class JSONToTableRequest(BaseModel):
     data: dict | list
     table_format: str = "html"
+
+class FormDataCreate(BaseModel):
+    form_name: str
+    data: str
+
+class FormDataUpdate(BaseModel):
+    form_name: str = None
+    data: str = None
+
+class FormDataResponse(BaseModel):
+    id: int
+    form_name: str
+    data: str
+    created_at: str
+    updated_at: str
+    
+    class Config:
+        from_attributes = True
 
 def flatten_dict(d: dict, parent_key: str = "", sep: str = "_") -> dict:
     """Flatten nested dictionaries"""
@@ -43,7 +64,7 @@ def json_to_html_table(data: dict | list) -> str:
     """Convert JSON to HTML table"""
     if isinstance(data, list):
         if not data:
-            return "<table><tr><td>No data</td></tr></table>"
+            return "<table><tr><td>Nodata</td></tr></table>"
         if isinstance(data[0], dict):
             rows = [flatten_dict(item) for item in data]
         else:
@@ -52,25 +73,25 @@ def json_to_html_table(data: dict | list) -> str:
         rows = [flatten_dict(data)]
     
     if not rows:
-        return "<table><tr><td>No data</td></tr></table>"
+        return "<table><tr><td>Nodata</td></tr></table>"
     
     all_keys = []
     for row in rows:
         all_keys.extend([k for k in row.keys() if k not in all_keys])
     
-    html = "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse: collapse;'>\n<thead>\n<tr>\n"
+    html = "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse:collapse;'><thead><tr>"
     for key in all_keys:
-        html += f"<th>{key}</th>\n"
-    html += "</tr>\n</thead>\n<tbody>\n"
+        html += f"<th>{key}</th>"
+    html += "</tr></thead><tbody>"
     
     for row in rows:
-        html += "<tr>\n"
+        html += "<tr>"
         for key in all_keys:
             value = row.get(key, "")
-            html += f"<td>{value}</td>\n"
-        html += "</tr>\n"
+            html += f"<td>{value}</td>"
+        html += "</tr>"
     
-    html += "</tbody>\n</table>"
+    html += "</tbody></table>"
     return html
 
 def json_to_csv(data: dict | list) -> str:
@@ -105,7 +126,7 @@ def json_to_markdown_table(data: dict | list) -> str:
     """Convert JSON to Markdown table"""
     if isinstance(data, list):
         if not data:
-            return "| No data |"
+            return "|Nodata|"
         if isinstance(data[0], dict):
             rows = [flatten_dict(item) for item in data]
         else:
@@ -114,18 +135,18 @@ def json_to_markdown_table(data: dict | list) -> str:
         rows = [flatten_dict(data)]
     
     if not rows:
-        return "| No data |"
+        return "|Nodata|"
     
     all_keys = []
     for row in rows:
         all_keys.extend([k for k in row.keys() if k not in all_keys])
     
-    markdown = "| " + " | ".join(all_keys) + " |\n"
-    markdown += "| " + " | ".join(["---"] * len(all_keys)) + " |\n"
+    markdown = "|" + "|".join(all_keys) + "|\n"
+    markdown += "|" + "|".join(["---"] * len(all_keys)) + "|\n"
     
     for row in rows:
         values = [str(row.get(key, "")) for key in all_keys]
-        markdown += "| " + " | ".join(values) + " |\n"
+        markdown += "|" + "|".join(values) + "|\n"
     
     return markdown
 
@@ -166,7 +187,12 @@ async def root():
         "endpoints": {
             "/upload": "POST - Upload handwritten image for extraction",
             "/health": "GET - Health check",
-            "/convert-to-table": "POST - Convert JSON data to table format (html, csv, markdown)"
+            "/convert-to-table": "POST - Convert JSON data to table format (html, csv, markdown)",
+            "/forms": "GET - Get all form data",
+            "/forms": "POST - Create new form data",
+            "/forms/{id}": "GET - Get form data by ID",
+            "/forms/{id}": "PUT - Update form data",
+            "/forms/{id}": "DELETE - Delete form data"
         }
     }
 
@@ -183,7 +209,7 @@ async def health_check():
     }
 
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
     if not agent:
         raise HTTPException(
             status_code=503,
@@ -226,12 +252,34 @@ async def upload_file(file: UploadFile = File(...)):
             print(f"[WARNING] Failed to delete temporary file: {e}")
         
         if result["success"]:
-            formatted_result = {
-                "success": result["success"],
-                "filename": result["filename"],
-                "message": result["message"],
-                "extracted_data": result["extracted_data"]
-            }
+            try:
+                db_form = FormData(
+                    form_name=filename,
+                    data=json.dumps(result["extracted_data"])
+                )
+                db.add(db_form)
+                db.commit()
+                db.refresh(db_form)
+                
+                formatted_result = {
+                    "success": result["success"],
+                    "filename": result["filename"],
+                    "message": result["message"],
+                    "extracted_data": result["extracted_data"],
+                    "form_id": db_form.id,
+                    "saved_to_database": True
+                }
+            except Exception as db_error:
+                db.rollback()
+                print(f"[WARNING] Failed to save to database: {db_error}")
+                formatted_result = {
+                    "success": result["success"],
+                    "filename": result["filename"],
+                    "message": result["message"],
+                    "extracted_data": result["extracted_data"],
+                    "saved_to_database": False
+                }
+            
             return JSONResponse(
                 content=formatted_result,
                 media_type="application/json"
@@ -269,6 +317,94 @@ async def cleanup_uploads():
                 deleted += 1
         return {"message": f"Cleaned up {deleted} files"}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/forms", response_model=FormDataResponse)
+async def create_form(form_data: FormDataCreate, db: Session = Depends(get_db)):
+    try:
+        db_form = FormData(form_name=form_data.form_name, data=form_data.data)
+        db.add(db_form)
+        db.commit()
+        db.refresh(db_form)
+        return {
+            "id": db_form.id,
+            "form_name": db_form.form_name,
+            "data": db_form.data,
+            "created_at": db_form.created_at.isoformat(),
+            "updated_at": db_form.updated_at.isoformat()
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+def serialize_form(form: FormData):
+    return {
+        "id": form.id,
+        "form_name": form.form_name,
+        "data": form.data,
+        "created_at": form.created_at.isoformat(),
+        "updated_at": form.updated_at.isoformat()
+    }
+
+@app.get("/forms")
+async def get_all_forms(db: Session = Depends(get_db)):
+    try:
+        stmt = select(FormData)
+        forms = db.execute(stmt).scalars().all()
+        return [serialize_form(form) for form in forms]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/forms/{form_id}", response_model=FormDataResponse)
+async def get_form(form_id: int, db: Session = Depends(get_db)):
+    try:
+        stmt = select(FormData).where(FormData.id == form_id)
+        form = db.execute(stmt).scalar_one_or_none()
+        if not form:
+            raise HTTPException(status_code=404, detail=f"Form with id {form_id} not found")
+        return serialize_form(form)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/forms/{form_id}", response_model=FormDataResponse)
+async def update_form(form_id: int, form_data: FormDataUpdate, db: Session = Depends(get_db)):
+    try:
+        stmt = select(FormData).where(FormData.id == form_id)
+        form = db.execute(stmt).scalar_one_or_none()
+        if not form:
+            raise HTTPException(status_code=404, detail=f"Form with id {form_id} not found")
+        
+        if form_data.form_name is not None:
+            form.form_name = form_data.form_name
+        if form_data.data is not None:
+            form.data = form_data.data
+        
+        db.commit()
+        db.refresh(form)
+        return serialize_form(form)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/forms/{form_id}")
+async def delete_form(form_id: int, db: Session = Depends(get_db)):
+    try:
+        stmt = select(FormData).where(FormData.id == form_id)
+        form = db.execute(stmt).scalar_one_or_none()
+        if not form:
+            raise HTTPException(status_code=404, detail=f"Form with id {form_id} not found")
+        
+        db.delete(form)
+        db.commit()
+        return {"message": f"Form with id {form_id} deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/convert-to-table")

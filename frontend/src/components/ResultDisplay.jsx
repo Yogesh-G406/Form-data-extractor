@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import './ResultDisplay.css'
 
-const ResultDisplay = ({ result, onReset }) => {
+const ResultDisplay = ({ result, onReset, onNavigateToForms }) => {
   const [copied, setCopied] = useState(false)
   const [expandedKeys, setExpandedKeys] = useState(new Set())
   const [showRawJson, setShowRawJson] = useState(false)
@@ -50,6 +50,17 @@ const ResultDisplay = ({ result, onReset }) => {
       }
     })
     return Object.fromEntries(items)
+  }
+
+  const shortenFieldName = (fullName) => {
+    const parts = fullName.split('_')
+    return parts[parts.length - 1]
+  }
+
+  const formatCellValue = (value) => {
+    if (value === null || value === undefined) return ''
+    const str = String(value).trim()
+    return str.length > 100 ? str.substring(0, 100) + '...' : str
   }
 
   const getTableData = () => {
@@ -123,7 +134,7 @@ const ResultDisplay = ({ result, onReset }) => {
           <thead>
             <tr>
               {allKeys.map(key => (
-                <th key={key}>{key}</th>
+                <th key={key} title={key}>{shortenFieldName(key)}</th>
               ))}
             </tr>
           </thead>
@@ -131,7 +142,7 @@ const ResultDisplay = ({ result, onReset }) => {
             {tableData.map((row, index) => (
               <tr key={index}>
                 {allKeys.map(key => (
-                  <td key={`${index}-${key}`}>{row[key] ?? ''}</td>
+                  <td key={`${index}-${key}`} title={String(row[key] ?? '')}>{formatCellValue(row[key])}</td>
                 ))}
               </tr>
             ))}
@@ -204,6 +215,16 @@ const ResultDisplay = ({ result, onReset }) => {
       <div className="result-header">
         <h2>✅ Extraction Complete</h2>
         <p className="filename">File: {result.filename}</p>
+        {result.saved_to_database && (
+          <p className="save-confirmation">
+            💾 Data automatically saved to database (ID: {result.form_id})
+          </p>
+        )}
+        {result.saved_to_database === false && (
+          <p className="save-warning">
+            ⚠️ Note: Data was not saved to database, but extraction was successful
+          </p>
+        )}
       </div>
 
       <div className="json-display">
@@ -261,6 +282,11 @@ const ResultDisplay = ({ result, onReset }) => {
         <button onClick={onReset} className="btn-primary">
           ⬆️ Upload Another Image
         </button>
+        {onNavigateToForms && (
+          <button onClick={onNavigateToForms} className="btn-secondary">
+            📋 View All Saved Forms
+          </button>
+        )}
       </div>
 
       <div className="info-box">

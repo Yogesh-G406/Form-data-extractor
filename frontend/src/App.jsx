@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import FileUpload from './components/FileUpload'
 import ResultDisplay from './components/ResultDisplay'
+import FormManager from './components/FormManager'
 import './App.css'
 
 function App() {
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [activeTab, setActiveTab] = useState('upload')
 
   const handleUploadSuccess = (data) => {
     setResult(data)
@@ -31,33 +33,57 @@ function App() {
           <p>Upload handwritten images and extract text using AI vision technology</p>
         </header>
 
+        <div className="tab-navigation">
+          <button
+            className={`tab-btn ${activeTab === 'upload' ? 'active' : ''}`}
+            onClick={() => setActiveTab('upload')}
+          >
+            ⬆️ Upload & Extract
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'forms' ? 'active' : ''}`}
+            onClick={() => setActiveTab('forms')}
+          >
+            📋 Manage Forms
+          </button>
+        </div>
+
         <div className="main-content">
-          {!result && !error && (
-            <FileUpload 
-              onUploadSuccess={handleUploadSuccess}
-              onUploadError={handleUploadError}
-              loading={loading}
-              setLoading={setLoading}
-            />
+          {activeTab === 'upload' && (
+            <>
+              {!result && !error && (
+                <FileUpload 
+                  onUploadSuccess={handleUploadSuccess}
+                  onUploadError={handleUploadError}
+                  loading={loading}
+                  setLoading={setLoading}
+                />
+              )}
+
+              {error && (
+                <div className="error-container">
+                  <div className="error-message">
+                    <h2>⚠️ Oops! Something went wrong</h2>
+                    <p>{error}</p>
+                    <button onClick={handleReset} className="btn-primary">
+                      🔄 Try Again
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {result && !error && (
+                <ResultDisplay 
+                  result={result}
+                  onReset={handleReset}
+                  onNavigateToForms={() => setActiveTab('forms')}
+                />
+              )}
+            </>
           )}
 
-          {error && (
-            <div className="error-container">
-              <div className="error-message">
-                <h2>⚠️ Oops! Something went wrong</h2>
-                <p>{error}</p>
-                <button onClick={handleReset} className="btn-primary">
-                  🔄 Try Again
-                </button>
-              </div>
-            </div>
-          )}
-
-          {result && !error && (
-            <ResultDisplay 
-              result={result}
-              onReset={handleReset}
-            />
+          {activeTab === 'forms' && (
+            <FormManager />
           )}
         </div>
 
