@@ -5,7 +5,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
+from pydantic import BaseModel
 from dotenv import load_dotenv
 from agent import HandwritingExtractionAgent
 
@@ -20,6 +21,113 @@ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
 agent = None
+
+class JSONToTableRequest(BaseModel):
+    data: dict | list
+    table_format: str = "html"
+
+def flatten_dict(d: dict, parent_key: str = "", sep: str = "_") -> dict:
+    """Flatten nested dictionaries"""
+    items = []
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.extend(flatten_dict(v, new_key, sep=sep).items())
+        elif isinstance(v, list):
+            items.append((new_key, str(v)))
+        else:
+            items.append((new_key, v))
+    return dict(items)
+
+def json_to_html_table(data: dict | list) -> str:
+    """Convert JSON to HTML table"""
+    if isinstance(data, list):
+        if not data:
+            return "<table><tr><td>No data</td></tr></table>"
+        if isinstance(data[0], dict):
+            rows = [flatten_dict(item) for item in data]
+        else:
+            rows = [{"value": item} for item in data]
+    else:
+        rows = [flatten_dict(data)]
+    
+    if not rows:
+        return "<table><tr><td>No data</td></tr></table>"
+    
+    all_keys = []
+    for row in rows:
+        all_keys.extend([k for k in row.keys() if k not in all_keys])
+    
+    html = "<table border='1' cellpadding='5' cellspacing='0' style='border-collapse: collapse;'>\n<thead>\n<tr>\n"
+    for key in all_keys:
+        html += f"<th>{key}</th>\n"
+    html += "</tr>\n</thead>\n<tbody>\n"
+    
+    for row in rows:
+        html += "<tr>\n"
+        for key in all_keys:
+            value = row.get(key, "")
+            html += f"<td>{value}</td>\n"
+        html += "</tr>\n"
+    
+    html += "</tbody>\n</table>"
+    return html
+
+def json_to_csv(data: dict | list) -> str:
+    """Convert JSON to CSV format"""
+    import csv
+    from io import StringIO
+    
+    if isinstance(data, list):
+        if not data:
+            return ""
+        if isinstance(data[0], dict):
+            rows = [flatten_dict(item) for item in data]
+        else:
+            rows = [{"value": item} for item in data]
+    else:
+        rows = [flatten_dict(data)]
+    
+    if not rows:
+        return ""
+    
+    all_keys = []
+    for row in rows:
+        all_keys.extend([k for k in row.keys() if k not in all_keys])
+    
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=all_keys)
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
+
+def json_to_markdown_table(data: dict | list) -> str:
+    """Convert JSON to Markdown table"""
+    if isinstance(data, list):
+        if not data:
+            return "| No data |"
+        if isinstance(data[0], dict):
+            rows = [flatten_dict(item) for item in data]
+        else:
+            rows = [{"value": item} for item in data]
+    else:
+        rows = [flatten_dict(data)]
+    
+    if not rows:
+        return "| No data |"
+    
+    all_keys = []
+    for row in rows:
+        all_keys.extend([k for k in row.keys() if k not in all_keys])
+    
+    markdown = "| " + " | ".join(all_keys) + " |\n"
+    markdown += "| " + " | ".join(["---"] * len(all_keys)) + " |\n"
+    
+    for row in rows:
+        values = [str(row.get(key, "")) for key in all_keys]
+        markdown += "| " + " | ".join(values) + " |\n"
+    
+    return markdown
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -57,7 +165,8 @@ async def root():
         "version": "1.0.0",
         "endpoints": {
             "/upload": "POST - Upload handwritten image for extraction",
-            "/health": "GET - Health check"
+            "/health": "GET - Health check",
+            "/convert-to-table": "POST - Convert JSON data to table format (html, csv, markdown)"
         }
     }
 
@@ -161,6 +270,36 @@ async def cleanup_uploads():
         return {"message": f"Cleaned up {deleted} files"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/convert-to-table")
+async def convert_json_to_table(request: JSONToTableRequest):
+    try:
+        table_format = request.table_format.lower()
+        
+        if table_format == "html":
+            content = json_to_html_table(request.data)
+            return HTMLResponse(content=content)
+        elif table_format == "csv":
+            content = json_to_csv(request.data)
+            return {
+                "format": "csv",
+                "content": content
+            }
+        elif table_format == "markdown":
+            content = json_to_markdown_table(request.data)
+            return {
+                "format": "markdown",
+                "content": content
+            }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported format: {table_format}. Supported formats: html, csv, markdown"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error converting JSON to table: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

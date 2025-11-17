@@ -5,6 +5,7 @@ const ResultDisplay = ({ result, onReset }) => {
   const [copied, setCopied] = useState(false)
   const [expandedKeys, setExpandedKeys] = useState(new Set())
   const [showRawJson, setShowRawJson] = useState(false)
+  const [viewMode, setViewMode] = useState('json')
 
   const handleCopy = async () => {
     try {
@@ -34,6 +35,110 @@ const ResultDisplay = ({ result, onReset }) => {
       console.error('Failed to download:', err)
       alert('Failed to download JSON')
     }
+  }
+
+  const flattenDict = (obj, parentKey = '', sep = '_') => {
+    const items = []
+    Object.entries(obj).forEach(([k, v]) => {
+      const newKey = parentKey ? `${parentKey}${sep}${k}` : k
+      if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+        items.push(...Object.entries(flattenDict(v, newKey, sep)))
+      } else if (Array.isArray(v)) {
+        items.push([newKey, JSON.stringify(v)])
+      } else {
+        items.push([newKey, v])
+      }
+    })
+    return Object.fromEntries(items)
+  }
+
+  const getTableData = () => {
+    if (Array.isArray(result.extracted_data)) {
+      return result.extracted_data.map(item => 
+        typeof item === 'object' ? flattenDict(item) : { value: item }
+      )
+    } else if (typeof result.extracted_data === 'object') {
+      return [flattenDict(result.extracted_data)]
+    }
+    return [{ value: result.extracted_data }]
+  }
+
+  const downloadCSV = () => {
+    try {
+      const tableData = getTableData()
+      if (tableData.length === 0) {
+        alert('No data to download')
+        return
+      }
+      
+      const allKeys = []
+      tableData.forEach(row => {
+        Object.keys(row).forEach(key => {
+          if (!allKeys.includes(key)) allKeys.push(key)
+        })
+      })
+
+      const csvContent = [
+        allKeys.map(key => `"${key}"`).join(','),
+        ...tableData.map(row =>
+          allKeys.map(key => {
+            const value = row[key] ?? ''
+            const stringValue = String(value)
+            return `"${stringValue.replace(/"/g, '""')}"`
+          }).join(',')
+        )
+      ].join('\n')
+
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `${result.filename.replace(/\.[^/.]+$/, '')}_extracted.csv`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Failed to download:', err)
+      alert('Failed to download CSV')
+    }
+  }
+
+  const renderTable = () => {
+    const tableData = getTableData()
+    if (tableData.length === 0) {
+      return <p>No data to display</p>
+    }
+
+    const allKeys = []
+    tableData.forEach(row => {
+      Object.keys(row).forEach(key => {
+        if (!allKeys.includes(key)) allKeys.push(key)
+      })
+    })
+
+    return (
+      <div className="table-wrapper">
+        <table className="data-table">
+          <thead>
+            <tr>
+              {allKeys.map(key => (
+                <th key={key}>{key}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {tableData.map((row, index) => (
+              <tr key={index}>
+                {allKeys.map(key => (
+                  <td key={`${index}-${key}`}>{row[key] ?? ''}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )
   }
 
   const toggleExpandKey = (key) => {
@@ -103,21 +208,48 @@ const ResultDisplay = ({ result, onReset }) => {
 
       <div className="json-display">
         <div className="json-header">
-          <h3>📊 Extracted Data</h3>
+          <h3>📊 Extraction Results</h3>
           <div className="json-actions">
-            <button onClick={() => setShowRawJson(!showRawJson)} className="btn-toggle-view" title="Toggle between formatted and raw JSON">
-              {showRawJson ? '🎨 Formatted' : '📄 Raw JSON'}
-            </button>
-            <button onClick={handleCopy} className={`btn-copy ${copied ? 'copied' : ''}`}>
-              {copied ? '✅ Copied!' : '📋 Copy'}
-            </button>
-            <button onClick={downloadJSON} className="btn-download" title="Download as JSON file">
-              ⬇️ Download
-            </button>
+            <div className="view-buttons">
+              <button 
+                onClick={() => setViewMode('json')} 
+                className={`btn-view ${viewMode === 'json' ? 'active' : ''}`}
+                title="View as JSON"
+              >
+                📄 JSON View
+              </button>
+              <button 
+                onClick={() => setViewMode('table')} 
+                className={`btn-view ${viewMode === 'table' ? 'active' : ''}`}
+                title="View as Table"
+              >
+                📋 Table View
+              </button>
+            </div>
+            <div className="download-buttons">
+              {viewMode === 'json' && (
+                <>
+                  <button onClick={() => setShowRawJson(!showRawJson)} className="btn-toggle-view" title="Toggle between formatted and raw JSON">
+                    {showRawJson ? '🎨 Formatted' : '📄 Raw JSON'}
+                  </button>
+                  <button onClick={handleCopy} className={`btn-copy ${copied ? 'copied' : ''}`}>
+                    {copied ? '✅ Copied!' : '📋 Copy'}
+                  </button>
+                </>
+              )}
+              <button onClick={downloadJSON} className="btn-download" title="Download as JSON file">
+                ⬇️ Download JSON
+              </button>
+              <button onClick={downloadCSV} className="btn-download" title="Download as CSV file">
+                ⬇️ Download CSV
+              </button>
+            </div>
           </div>
         </div>
         <div className="json-viewer">
-          {showRawJson ? (
+          {viewMode === 'table' ? (
+            renderTable()
+          ) : showRawJson ? (
             <pre className="raw-json">{JSON.stringify(result.extracted_data, null, 2)}</pre>
           ) : (
             renderJSON(result.extracted_data)
