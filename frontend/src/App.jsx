@@ -87,9 +87,7 @@ function App() {
           )}
         </div>
 
-        <footer className="footer">
-          <p>Powered by LangChain, Langfuse, and GPT-4 Vision</p>
-        </footer>
+
       </div>
     </div>
   )
