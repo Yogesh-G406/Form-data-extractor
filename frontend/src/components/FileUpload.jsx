@@ -6,7 +6,7 @@ const FileUpload = ({ onUploadSuccess, onUploadError, loading, setLoading }) => 
   const [preview, setPreview] = useState(null)
   const [selectedFile, setSelectedFile] = useState(null)
   const [dragActive, setDragActive] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadProgress, setUploadProgress] = useState()
   const fileInputRef = useRef(null)
 
   const handleDrag = (e) => {

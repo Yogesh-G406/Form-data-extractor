@@ -6,6 +6,7 @@ from PIL import Image, ImageEnhance, ImageFilter
 import io
 from langfuse import Langfuse
 from openai import OpenAI
+from groq import Groq
 
 
 class HandwritingExtractionAgent:
@@ -44,6 +45,14 @@ class HandwritingExtractionAgent:
             print("[OK] HuggingFace API configured (Qwen2.5-VL-7B-Instruct)")
         else:
             print("[WARNING] HuggingFace token not configured")
+        
+        self.groq_api_key = os.getenv("GROQ_API_KEY")
+        if self.groq_api_key:
+            self.groq_client = Groq(api_key=self.groq_api_key)
+            print("[OK] Groq API configured for translation")
+        else:
+            self.groq_client = None
+            print("[WARNING] Groq API key not configured")
     
     def preprocess_image(self, image_path: str) -> Image.Image:
         """Enhance image quality for better OCR accuracy"""
@@ -93,10 +102,10 @@ class HandwritingExtractionAgent:
         
         return base64.b64encode(image_bytes).decode('utf-8')
     
-    def extract_handwriting(self, image_path: str, filename: str) -> Dict[str, Any]:
-        return self.extract_handwriting_huggingface(image_path, filename)
+    def extract_handwriting(self, image_path: str, filename: str, language: str = "English") -> Dict[str, Any]:
+        return self.extract_handwriting_huggingface(image_path, filename, language)
     
-    def extract_handwriting_huggingface(self, image_path: str, filename: str) -> Dict[str, Any]:
+    def extract_handwriting_huggingface(self, image_path: str, filename: str, language: str = "English") -> Dict[str, Any]:
         """Extract handwriting using HuggingFace Qwen2.5-VL model via OpenAI API"""
         if not self.hf_client:
             return {
@@ -110,7 +119,9 @@ class HandwritingExtractionAgent:
             with open(image_path, "rb") as image_file:
                 image_data = base64.standard_b64encode(image_file.read()).decode("utf-8")
             
-            prompt = """You are an expert OCR system specialized in reading handwritten text with maximum accuracy.
+            prompt = f"""You are an expert OCR system specialized in reading handwritten text with maximum accuracy.
+
+This document is written in {language}. Please read and extract the text in {language}.
 
 Analyze this handwritten document with extreme care and extract ALL the information you can see.
 
@@ -125,7 +136,7 @@ CRITICAL INSTRUCTIONS FOR MAXIMUM ACCURACY:
 4. For partially readable text, extract what you can see clearly, even if incomplete
 5. If text is completely illegible or blank, mark it as "unreadable" (not null)
 6. Return the data as clean, structured JSON with proper nesting
-7. Create field names based on actual labels, headings, and form structure you see
+7. Create field names based on actual labels, headings, and form structure you see (in {language})
 8. Preserve the exact logical structure and grouping of information
 9. Be extremely precise with values - read numbers and text character by character
 10. Double-check your extraction before returning the JSON
@@ -158,11 +169,17 @@ The JSON should have descriptive keys based on the actual content structure."""
             extracted_text = completion.choices[0].message.content
             structured_data = self._parse_json_response(extracted_text)
             
+            if language.lower() != "english" and self.groq_client:
+                try:
+                    structured_data = self._translate_json_to_english(structured_data, language)
+                except Exception as e:
+                    print(f"[WARNING] Translation failed: {e}")
+            
             result = {
                 "success": True,
                 "filename": filename,
                 "extracted_data": structured_data,
-                "message": "Handwriting extracted successfully using HuggingFace"
+                "message": f"Handwriting extracted successfully using HuggingFace{' and translated to English' if language.lower() != 'english' else ''}"
             }
             
             if self.langfuse:
@@ -208,3 +225,39 @@ The JSON should have descriptive keys based on the actual content structure."""
             return json.loads(extracted_text)
         except json.JSONDecodeError:
             return {"raw_text": extracted_text}
+    
+    def _translate_json_to_english(self, data: Dict[str, Any], source_language: str) -> Dict[str, Any]:
+        """Recursively translate JSON keys and string values to English using Groq API"""
+        if not self.groq_client:
+            return data
+        
+        json_str = json.dumps(data, ensure_ascii=False, indent=2)
+        
+        translation_prompt = f"""You are a translation assistant. Translate the following JSON from {source_language} to English.
+
+IMPORTANT RULES:
+1. Translate ONLY the keys (field names) and string values
+2. Keep all numbers, dates, and special characters unchanged
+3. Preserve the exact JSON structure
+4. Return ONLY valid JSON with no additional text before or after
+5. Do not translate values that are already partially in English
+6. If a value is "unreadable", keep it as is
+
+JSON to translate:
+{json_str}"""
+        
+        try:
+            response = self.groq_client.chat.completions.create(
+                model="mixtral-8x7b-32768",
+                messages=[
+                    {"role": "user", "content": translation_prompt}
+                ],
+                temperature=0.3,
+                max_tokens=2000
+            )
+            
+            translated_text = response.choices[0].message.content
+            return self._parse_json_response(translated_text)
+        except Exception as e:
+            print(f"[ERROR] Translation error: {e}")
+            return data

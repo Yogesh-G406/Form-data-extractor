@@ -100,7 +100,7 @@ async def health_check():
     }
 
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_file(file: UploadFile = File(...), language: str = "English", db: Session = Depends(get_db)):
     if not agent:
         raise HTTPException(
             status_code=503,
@@ -135,7 +135,7 @@ async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db
         with open(file_path, "wb") as f:
             f.write(contents)
         
-        result = agent.extract_handwriting(str(file_path), filename)
+        result = agent.extract_handwriting(str(file_path), filename, language)
         
         try:
             os.remove(file_path)
