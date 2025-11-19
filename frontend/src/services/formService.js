@@ -1,6 +1,7 @@
 import axios from 'axios'
 
-const API_BASE_URL = 'http://localhost:8000'
+// Use environment variable if provided, fallback to backend container
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://backend:8000'
 
 const formService = {
   createForm: async (formName, data) => {

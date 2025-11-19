@@ -91,11 +91,13 @@ async def root():
 async def health_check():
     ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
     ollama_model = os.getenv("OLLAMA_MODEL", "llava")
+    backend=os.getenv("VITE_API_URL", "http://localhost:8000")
     return {
         "status": "healthy",
         "agent_initialized": agent is not None,
         "ollama_host": ollama_host,
         "ollama_model": ollama_model,
+        "backend_url": backend,
         "langfuse_configured": bool(os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"))
     }
 
