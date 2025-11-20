@@ -1,12 +1,9 @@
 import axios from 'axios'
 
-// Use environment variable if provided, fallback to backend container
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://backend:8000'
-
 const formService = {
   createForm: async (formName, data) => {
     try {
-      const response = await axios.post(`${API_BASE_URL}/forms`, {
+      const response = await axios.post('/api/forms', {
         form_name: formName,
         data: typeof data === 'string' ? data : JSON.stringify(data)
       })
@@ -18,7 +15,7 @@ const formService = {
 
   getAllForms: async () => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/forms`)
+      const response = await axios.get('/api/forms')
       return response.data
     } catch (error) {
       throw error.response?.data?.detail || error.message
@@ -27,7 +24,7 @@ const formService = {
 
   getFormById: async (id) => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/forms/${id}`)
+      const response = await axios.get(`/api/forms/${id}`)
       return response.data
     } catch (error) {
       throw error.response?.data?.detail || error.message
@@ -36,7 +33,7 @@ const formService = {
 
   updateForm: async (id, updates) => {
     try {
-      const response = await axios.put(`${API_BASE_URL}/forms/${id}`, updates)
+      const response = await axios.put(`/api/forms/${id}`, updates)
       return response.data
     } catch (error) {
       throw error.response?.data?.detail || error.message
@@ -45,7 +42,7 @@ const formService = {
 
   deleteForm: async (id) => {
     try {
-      const response = await axios.delete(`${API_BASE_URL}/forms/${id}`)
+      const response = await axios.delete(`/api/forms/${id}`)
       return response.data
     } catch (error) {
       throw error.response?.data?.detail || error.message
