@@ -1,0 +1,19 @@
+{
+  "name": "handwriting-extraction-tests",
+  "version": "1.0.0",
+  "description": "Test suite for Handwriting Extraction AI",
+  "scripts": {
+    "test": "playwright test",
+    "test:frontend": "playwright test tests/frontend",
+    "test:backend": "playwright test tests/backend",
+    "test:all": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:headed": "playwright test --headed",
+    "test:debug": "playwright test --debug",
+    "test:report": "playwright show-report",
+    "test:codegen": "playwright codegen http://localhost:5000"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1"
+  }
+}

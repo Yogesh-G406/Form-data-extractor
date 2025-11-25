@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from agent import HandwritingExtractionAgent
+from langchain_agent import LangChainFormAgent
 from database import get_db, FormData
 
 # Load .env file from the backend directory
@@ -23,6 +24,7 @@ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".pdf"}
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
 agent = None
+langchain_agent = None
 
 class FormDataCreate(BaseModel):
     form_name: str
@@ -45,13 +47,21 @@ class FormDataResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global agent
+    global agent, langchain_agent
     try:
         agent = HandwritingExtractionAgent()
         print("[OK] Handwriting Extraction Agent initialized")
     except Exception as e:
         print(f"[WARNING] Agent initialization failed: {e}")
         print("Please ensure Ollama is running and reachable (see README)")
+    
+    try:
+        langchain_agent = LangChainFormAgent()
+        print("[OK] LangChain Form Agent initialized")
+    except Exception as e:
+        print(f"[WARNING] LangChain Form Agent initialization failed: {e}")
+        print("Form field extraction via LangChain will not be available")
+    
     yield
     # Shutdown (if needed)
     pass
@@ -79,6 +89,9 @@ async def root():
         "endpoints": {
             "/upload": "POST - Upload handwritten image for extraction",
             "/health": "GET - Health check",
+            "/extract-form-fields": "POST - Extract and structure form fields from text",
+            "/validate-form": "POST - Validate extracted form fields",
+            "/classify-form": "POST - Classify form type",
             "/forms": "GET - Get all form data",
             "/forms": "POST - Create new form data",
             "/forms/{id}": "GET - Get form data by ID",
@@ -95,11 +108,71 @@ async def health_check():
     return {
         "status": "healthy",
         "agent_initialized": agent is not None,
+        "langchain_agent_initialized": langchain_agent is not None,
         "ollama_host": ollama_host,
         "ollama_model": ollama_model,
         "backend_url": backend,
         "langfuse_configured": bool(os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY"))
     }
+
+class ExtractFormFieldsRequest(BaseModel):
+    extracted_text: dict
+    language: str = "English"
+
+class ValidateFormRequest(BaseModel):
+    fields: list
+    expected_fields: list = None
+
+class ClassifyFormRequest(BaseModel):
+    extracted_text: dict
+
+@app.post("/extract-form-fields")
+async def extract_form_fields(request: ExtractFormFieldsRequest):
+    if not langchain_agent:
+        raise HTTPException(
+            status_code=503,
+            detail="LangChain Form Agent not initialized. Check HuggingFace token configuration."
+        )
+    
+    try:
+        result = langchain_agent.extract_form_fields(
+            request.extracted_text,
+            request.language
+        )
+        return JSONResponse(content=result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/validate-form")
+async def validate_form(request: ValidateFormRequest):
+    if not langchain_agent:
+        raise HTTPException(
+            status_code=503,
+            detail="LangChain Form Agent not initialized."
+        )
+    
+    try:
+        result = langchain_agent.validate_form_fields(
+            request.fields,
+            request.expected_fields
+        )
+        return JSONResponse(content=result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/classify-form")
+async def classify_form(request: ClassifyFormRequest):
+    if not langchain_agent:
+        raise HTTPException(
+            status_code=503,
+            detail="LangChain Form Agent not initialized."
+        )
+    
+    try:
+        result = langchain_agent.classify_form(request.extracted_text)
+        return JSONResponse(content=result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...), language: str = "English", db: Session = Depends(get_db)):
