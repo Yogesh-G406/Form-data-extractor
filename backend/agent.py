@@ -1,6 +1,7 @@
 import os
 import base64
 import json
+import time
 from typing import Dict, Any, Optional
 from PIL import Image, ImageEnhance, ImageFilter
 import io
@@ -102,20 +103,31 @@ class HandwritingExtractionAgent:
         
         return base64.b64encode(image_bytes).decode('utf-8')
     
-    def extract_handwriting(self, image_path: str, filename: str, language: str = "English") -> Dict[str, Any]:
-        return self.extract_handwriting_huggingface(image_path, filename, language)
+    def extract_handwriting(self, image_path: str, filename: str, language: str = "English", parent_trace=None) -> Dict[str, Any]:
+        return self.extract_handwriting_huggingface(image_path, filename, language, parent_trace=parent_trace)
     
-    def extract_handwriting_huggingface(self, image_path: str, filename: str, language: str = "English") -> Dict[str, Any]:
-        """Extract handwriting using HuggingFace Qwen2.5-VL model via OpenAI API"""
+    def extract_handwriting_huggingface(self, image_path, filename, language="English", parent_trace=None):
+        """
+        Extract handwriting using Hugging Face Inference API (Qwen/Qwen2.5-VL-7B-Instruct)
+        """
         if not self.hf_client:
             return {
                 "success": False,
-                "filename": filename,
-                "error": "HuggingFace token not configured",
-                "message": "HF_TOKEN environment variable not set"
+                "error": "HuggingFace client not initialized",
+                "prompt": None
             }
         
+        prompt = None
+        trace = None
+        generation = None
+        start_time = time.time()
+        
         try:
+            # Get image size for metadata
+            from PIL import Image
+            img = Image.open(image_path)
+            image_size = {"width": img.width, "height": img.height}
+            
             with open(image_path, "rb") as image_file:
                 image_data = base64.standard_b64encode(image_file.read()).decode("utf-8")
             
@@ -145,6 +157,51 @@ IMPORTANT: Read slowly and carefully. Accuracy is more important than speed.
 Return ONLY valid JSON with no additional text, markdown, or explanation before or after.
 The JSON should have descriptive keys based on the actual content structure."""
             
+            # Create Langfuse trace/span
+            if self.langfuse:
+                try:
+                    # If parent trace provided, create a span under it
+                    if parent_trace:
+                        trace = parent_trace.start_span(
+                            name="handwriting_extraction",
+                            input=prompt,
+                            metadata={
+                                "filename": filename,
+                                "language": language,
+                                "image_size": image_size,
+                                "preprocessing_enabled": self.enable_preprocessing,
+                                "model": "Qwen/Qwen2.5-VL-7B-Instruct"
+                            }
+                        )
+                    # Otherwise create a new root span
+                    else:
+                        trace = self.langfuse.start_span(
+                            name="handwriting_extraction",
+                            input=prompt,
+                            metadata={
+                                "filename": filename,
+                                "language": language,
+                                "image_size": image_size,
+                                "preprocessing_enabled": self.enable_preprocessing,
+                                "model": "Qwen/Qwen2.5-VL-7B-Instruct"
+                            }
+                        )
+                    
+                    # Create generation for LLM call
+                    generation = trace.start_generation(
+                        name="ocr_extraction",
+                        model="Qwen/Qwen2.5-VL-7B-Instruct:hyperbolic",
+                        input=prompt,
+                        metadata={
+                            "provider": "huggingface",
+                            "image_included": True
+                        }
+                    )
+                except Exception as lf_error:
+                    print(f"[WARNING] Langfuse trace creation failed: {lf_error}")
+                    trace = None
+                    generation = None
+            
             completion = self.hf_client.chat.completions.create(
                 model="Qwen/Qwen2.5-VL-7B-Instruct:hyperbolic",
                 messages=[
@@ -167,44 +224,91 @@ The JSON should have descriptive keys based on the actual content structure."""
             )
             
             extracted_text = completion.choices[0].message.content
+            
+            # Update generation with response
+            if generation:
+                try:
+                    generation.update(
+                        output=extracted_text,
+                        usage={
+                            "input": len(prompt),
+                            "output": len(extracted_text)
+                        }
+                    )
+                    generation.end()
+                except Exception as lf_error:
+                    print(f"[WARNING] Langfuse generation update failed: {lf_error}")
+            
             structured_data = self._parse_json_response(extracted_text)
             
+            # Track translation if needed
             if language.lower() != "english" and self.groq_client:
                 try:
-                    structured_data = self._translate_json_to_english(structured_data, language)
+                    structured_data = self._translate_json_to_english(structured_data, language, trace)
                 except Exception as e:
                     print(f"[WARNING] Translation failed: {e}")
+            
+            duration = time.time() - start_time
             
             result = {
                 "success": True,
                 "filename": filename,
                 "extracted_data": structured_data,
+                "prompt": prompt,
                 "message": f"Handwriting extracted successfully using HuggingFace{' and translated to English' if language.lower() != 'english' else ''}"
             }
             
-            if self.langfuse:
+            # Update trace with final result
+            if trace:
                 try:
-                    trace = self.langfuse.trace(name="handwriting_extraction_hf")  # type: ignore
-                    trace.update(input={"filename": filename}, output=result)
-                except Exception as e:
-                    print(f"[WARNING] Langfuse trace failed: {e}")
+                    trace.update(
+                        output=structured_data,
+                        metadata={
+                            "duration_seconds": round(duration, 2),
+                            "fields_extracted": len(structured_data),
+                            "translated": language.lower() != "english",
+                            "full_result": result
+                        }
+                    )
+                    trace.end()
+                except Exception as lf_error:
+                    print(f"[WARNING] Langfuse trace update failed: {lf_error}")
             
             return result
             
         except Exception as e:
+            import traceback
+            duration = time.time() - start_time
+            
             error_result = {
                 "success": False,
                 "filename": filename,
                 "error": str(e),
-                "message": "Failed to extract handwriting using HuggingFace"
+                "message": "Failed to extract handwriting using HuggingFace",
+                "prompt": prompt,
+                "metadata": {
+                    "error_type": type(e).__name__
+                }
             }
             
+            # Track error in Langfuse
             if self.langfuse:
                 try:
-                    trace = self.langfuse.trace(name="handwriting_extraction_hf_error")  # type: ignore
-                    trace.update(input={"filename": filename}, output=error_result)
-                except:
-                    pass
+                    if not trace:
+                        trace = self.langfuse.start_span(name="handwriting_extraction_error")
+                    
+                    trace.update(
+                        output=error_result,
+                        metadata={
+                            "error_type": type(e).__name__,
+                            "error_message": str(e),
+                            "stack_trace": traceback.format_exc(),
+                            "duration_seconds": round(duration, 2)
+                        }
+                    )
+                    trace.end()
+                except Exception as lf_error:
+                    print(f"[WARNING] Langfuse error tracking failed: {lf_error}")
             
             return error_result
     
@@ -226,7 +330,7 @@ The JSON should have descriptive keys based on the actual content structure."""
         except json.JSONDecodeError:
             return {"raw_text": extracted_text}
     
-    def _translate_json_to_english(self, data: Dict[str, Any], source_language: str) -> Dict[str, Any]:
+    def _translate_json_to_english(self, data: Dict[str, Any], source_language: str, trace=None) -> Dict[str, Any]:
         """Recursively translate JSON keys and string values to English using Groq API"""
         if not self.groq_client:
             return data
@@ -246,7 +350,25 @@ IMPORTANT RULES:
 JSON to translate:
 {json_str}"""
         
+        generation = None
         try:
+            # Create generation for translation if trace exists
+            if trace and self.langfuse:
+                try:
+                    generation = trace.start_generation(
+                        name="translation",
+                        model="mixtral-8x7b-32768",
+                        input=translation_prompt,
+                        metadata={
+                            "provider": "groq",
+                            "source_language": source_language,
+                            "target_language": "English"
+                        }
+                    )
+                except Exception as lf_error:
+                    print(f"[WARNING] Langfuse translation generation failed: {lf_error}")
+                    generation = None
+            
             response = self.groq_client.chat.completions.create(
                 model="mixtral-8x7b-32768",
                 messages=[
@@ -257,7 +379,34 @@ JSON to translate:
             )
             
             translated_text = response.choices[0].message.content
+            
+            # Update generation with response
+            if generation:
+                try:
+                    generation.update(
+                        output=translated_text,
+                        usage={
+                            "input": len(translation_prompt),
+                            "output": len(translated_text)
+                        }
+                    )
+                    generation.end()
+                except Exception as lf_error:
+                    print(f"[WARNING] Langfuse translation update failed: {lf_error}")
+            
             return self._parse_json_response(translated_text)
         except Exception as e:
             print(f"[ERROR] Translation error: {e}")
+            
+            # Track translation error
+            if generation:
+                try:
+                    generation.update(
+                        output={"error": str(e)},
+                        metadata={"error_type": type(e).__name__}
+                    )
+                    generation.end()
+                except Exception:
+                    pass
+            
             return data

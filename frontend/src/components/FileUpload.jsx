@@ -1,13 +1,15 @@
 import { useState, useRef } from 'react'
 import axios from 'axios'
+import { useTracking } from '../hooks/useTracking'
 import './FileUpload.css'
 
 const FileUpload = ({ onUploadSuccess, onUploadError, loading, setLoading }) => {
   const [preview, setPreview] = useState(null)
   const [selectedFile, setSelectedFile] = useState(null)
   const [dragActive, setDragActive] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState()
+  const [uploadProgress, setUploadProgress] = useState(0)
   const fileInputRef = useRef(null)
+  const { trackFileSelection, trackClick, trackApiCall, trackEvent } = useTracking()
 
   const handleDrag = (e) => {
     e.preventDefault()
@@ -23,7 +25,7 @@ const FileUpload = ({ onUploadSuccess, onUploadError, loading, setLoading }) => 
     e.preventDefault()
     e.stopPropagation()
     setDragActive(false)
-    
+
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       handleFile(e.dataTransfer.files[0])
     }
@@ -38,7 +40,7 @@ const FileUpload = ({ onUploadSuccess, onUploadError, loading, setLoading }) => 
 
   const handleFile = (file) => {
     const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'application/pdf']
-    
+
     if (!validTypes.includes(file.type)) {
       onUploadError('Please upload a JPG, PNG, or PDF file')
       return
@@ -50,7 +52,12 @@ const FileUpload = ({ onUploadSuccess, onUploadError, loading, setLoading }) => 
     }
 
     setSelectedFile(file)
-    
+
+    // Track file selection
+    trackFileSelection(file, {
+      method: 'file_input',
+    })
+
     if (file.type !== 'application/pdf') {
       const reader = new FileReader()
       reader.onloadend = () => {
@@ -73,6 +80,8 @@ const FileUpload = ({ onUploadSuccess, onUploadError, loading, setLoading }) => 
     const formData = new FormData()
     formData.append('file', selectedFile)
 
+    const startTime = performance.now()
+
     try {
       const response = await axios.post('/api/upload', formData, {
         headers: {
@@ -84,9 +93,25 @@ const FileUpload = ({ onUploadSuccess, onUploadError, loading, setLoading }) => 
         },
       })
 
+      const duration = performance.now() - startTime
+
+      // Track successful API call
+      trackApiCall('/api/upload', 'POST', 200, duration, {
+        filename: selectedFile.name,
+        file_size: selectedFile.size,
+      })
+
       onUploadSuccess(response.data)
     } catch (err) {
+      const duration = performance.now() - startTime
       const errorMessage = err.response?.data?.detail || err.message || 'Failed to process image'
+
+      // Track failed API call
+      trackApiCall('/api/upload', 'POST', err.response?.status || 500, duration, {
+        filename: selectedFile.name,
+        error: errorMessage,
+      })
+
       onUploadError(errorMessage)
     } finally {
       setLoading(false)
@@ -101,7 +126,7 @@ const FileUpload = ({ onUploadSuccess, onUploadError, loading, setLoading }) => 
   return (
     <div className="upload-container">
       {!selectedFile ? (
-        <div 
+        <div
           className={`dropzone ${dragActive ? 'active' : ''}`}
           onDragEnter={handleDrag}
           onDragLeave={handleDrag}
@@ -115,7 +140,7 @@ const FileUpload = ({ onUploadSuccess, onUploadError, loading, setLoading }) => 
             onChange={handleChange}
             style={{ display: 'none' }}
           />
-          
+
           <div className="dropzone-content">
             <svg className="upload-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
@@ -135,7 +160,7 @@ const FileUpload = ({ onUploadSuccess, onUploadError, loading, setLoading }) => 
               <img src={preview} alt="Preview" />
             </div>
           )}
-          
+
           <div className="file-info-box">
             <p className="filename">📄 {selectedFile.name}</p>
             <p className="filesize">{(selectedFile.size / 1024).toFixed(2)} KB</p>
@@ -151,8 +176,8 @@ const FileUpload = ({ onUploadSuccess, onUploadError, loading, setLoading }) => 
                 )}
               </div>
               <div className="progress-bar">
-                <div 
-                  className="progress-fill" 
+                <div
+                  className="progress-fill"
                   style={{ width: `${uploadProgress}%` }}
                 ></div>
               </div>
@@ -160,8 +185,8 @@ const FileUpload = ({ onUploadSuccess, onUploadError, loading, setLoading }) => 
           )}
 
           <div className="button-group">
-            <button 
-              onClick={handleUpload} 
+            <button
+              onClick={handleUpload}
               className="btn-primary"
               disabled={loading}
             >
@@ -174,12 +199,17 @@ const FileUpload = ({ onUploadSuccess, onUploadError, loading, setLoading }) => 
                 '✨ Extract Text'
               )}
             </button>
-            <button 
+            <button
               onClick={() => {
                 setSelectedFile(null)
                 setPreview(null)
                 setUploadProgress(0)
-              }} 
+
+                // Track file change
+                trackEvent('file_changed', {
+                  action: 'choose_different_file',
+                })
+              }}
               className="btn-secondary"
               disabled={loading}
             >

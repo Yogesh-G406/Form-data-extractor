@@ -9,9 +9,11 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+from langfuse import Langfuse
 from agent import HandwritingExtractionAgent
 from langchain_agent import LangChainFormAgent
 from database import get_db, FormData
+from langfuse_middleware import LangfuseMiddleware
 
 # Load .env file from the backend directory
 env_path = Path(__file__).parent / ".env"
@@ -25,6 +27,7 @@ MAX_FILE_SIZE = 10 * 1024 * 1024
 
 agent = None
 langchain_agent = None
+langfuse_client = None
 
 class FormDataCreate(BaseModel):
     form_name: str
@@ -47,7 +50,26 @@ class FormDataResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global agent, langchain_agent
+    global agent, langchain_agent, langfuse_client
+    
+    # Initialize Langfuse
+    langfuse_public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+    langfuse_host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+    
+    if langfuse_public_key and langfuse_secret_key:
+        try:
+            langfuse_client = Langfuse(
+                public_key=langfuse_public_key,
+                secret_key=langfuse_secret_key,
+                host=langfuse_host
+            )
+            print(f"[DEBUG] Langfuse client initialized with host: {langfuse_host}")
+        except Exception as e:
+            print(f"[WARNING] Failed to initialize Langfuse client: {e}")
+    else:
+        print("[WARNING] Langfuse credentials not configured")
+    
     try:
         agent = HandwritingExtractionAgent()
         print("[OK] Handwriting Extraction Agent initialized")
@@ -63,8 +85,10 @@ async def lifespan(app: FastAPI):
         print("Form field extraction via LangChain will not be available")
     
     yield
-    # Shutdown (if needed)
-    pass
+    # Shutdown
+    if langfuse_client:
+        langfuse_client.flush()
+        print("[OK] Langfuse client flushed")
 
 app = FastAPI(
     title="Handwriting Extraction API",
@@ -80,6 +104,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add Langfuse middleware
+if langfuse_client:
+    app.add_middleware(LangfuseMiddleware, langfuse_client=langfuse_client)
 
 @app.get("/")
 async def root():
@@ -199,8 +227,40 @@ async def upload_file(file: UploadFile = File(...), language: str = "English", d
     file_path = None
     try:
         contents = await file.read()
+        file_size = len(contents)
         
-        if len(contents) > MAX_FILE_SIZE:
+        # Track file upload event (Root Trace)
+        root_trace = None
+        if langfuse_client:
+            print("[DEBUG] Attempting to create root trace...")
+            try:
+                # Create a root trace for the entire request
+                if hasattr(langfuse_client, 'trace'):
+                    root_trace = langfuse_client.trace(
+                        name="file_upload_request",
+                        input={"filename": filename, "file_type": file_ext, "size": file_size},
+                        metadata={
+                            "filename": filename,
+                            "file_type": file_ext,
+                            "file_size_bytes": file_size,
+                            "language": language
+                        }
+                    )
+                elif hasattr(langfuse_client, 'start_span'):
+                    root_trace = langfuse_client.start_span(
+                        name="file_upload_request",
+                        input={"filename": filename, "file_type": file_ext, "size": file_size},
+                        metadata={
+                            "filename": filename,
+                            "file_type": file_ext,
+                            "file_size_bytes": file_size,
+                            "language": language
+                        }
+                    )
+            except Exception as lf_error:
+                print(f"[WARNING] Langfuse tracking failed: {lf_error}")
+        
+        if file_size > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=400,
                 detail=f"File size exceeds maximum allowed size of {MAX_FILE_SIZE / (1024*1024)}MB"
@@ -210,7 +270,8 @@ async def upload_file(file: UploadFile = File(...), language: str = "English", d
         with open(file_path, "wb") as f:
             f.write(contents)
         
-        result = agent.extract_handwriting(str(file_path), filename, language)
+        # Extract handwriting using agent, passing the root trace
+        result = agent.extract_handwriting(str(file_path), filename, language, parent_trace=root_trace)
         
         try:
             os.remove(file_path)
@@ -227,6 +288,22 @@ async def upload_file(file: UploadFile = File(...), language: str = "English", d
                 db.commit()
                 db.refresh(db_form)
                 
+                # Track database save event
+                if root_trace:
+                    try:
+                        root_trace.create_event(
+                            name="form_created",
+                            input={"filename": filename, "extracted_data": result["extracted_data"]},
+                            output={"success": True, "form_id": db_form.id},
+                            metadata={
+                                "form_id": db_form.id,
+                                "form_name": filename,
+                                "fields_count": len(result["extracted_data"])
+                            }
+                        )
+                    except Exception as lf_error:
+                        print(f"[WARNING] Langfuse tracking failed: {lf_error}")
+                
                 formatted_result = {
                     "success": result["success"],
                     "filename": result["filename"],
@@ -238,6 +315,22 @@ async def upload_file(file: UploadFile = File(...), language: str = "English", d
             except Exception as db_error:
                 db.rollback()
                 print(f"[WARNING] Failed to save to database: {db_error}")
+                
+                # Track database error
+                if root_trace:
+                    try:
+                        root_trace.create_event(
+                            name="database_error",
+                            input={"operation": "create_form", "filename": filename},
+                            output={"error": str(db_error)},
+                            metadata={
+                                "operation": "create_form",
+                                "error": str(db_error)
+                            }
+                        )
+                    except Exception as lf_error:
+                        print(f"[WARNING] Langfuse tracking failed: {lf_error}")
+                
                 formatted_result = {
                     "success": result["success"],
                     "filename": result["filename"],
@@ -245,6 +338,21 @@ async def upload_file(file: UploadFile = File(...), language: str = "English", d
                     "extracted_data": result["extracted_data"],
                     "saved_to_database": False
                 }
+
+            # Update and end root trace with success info
+            if root_trace:
+                try:
+                    # Get prompt and extracted data from result
+                    prompt = result.get("prompt", "Prompt not available")
+                    extracted_data = result.get("extracted_data", {})
+                    
+                    root_trace.update(
+                        input=prompt, 
+                        output=extracted_data
+                    )
+                    root_trace.end()
+                except Exception as lf_error:
+                    print(f"[WARNING] Langfuse trace update failed: {lf_error}")
             
             return JSONResponse(
                 content=formatted_result,
@@ -261,6 +369,22 @@ async def upload_file(file: UploadFile = File(...), language: str = "English", d
         error_type = type(e).__name__
         print(f"[ERROR] Upload error: {error_type}: {error_details}")
         print(f"[ERROR] Traceback: {traceback.format_exc()}")
+        
+        # Track upload error
+        if root_trace:
+            try:
+                root_trace.create_event(
+                    name="upload_error",
+                    input={"filename": filename},
+                    output={"error": error_details, "type": error_type},
+                    metadata={
+                        "filename": filename,
+                        "error_type": error_type,
+                        "error_message": error_details
+                    }
+                )
+            except Exception as lf_error:
+                print(f"[WARNING] Langfuse tracking failed: {lf_error}")
         
         if file_path and file_path.exists():
             try:
@@ -280,6 +404,22 @@ async def create_form(form_data: FormDataCreate, db: Session = Depends(get_db)):
         db.add(db_form)
         db.commit()
         db.refresh(db_form)
+        
+        # Track form creation (manual) - this is separate endpoint, keep as create_event
+        if langfuse_client:
+            try:
+                langfuse_client.create_event(
+                    name="form_created_manual",
+                    input=form_data.model_dump(),
+                    output={"success": True, "form_id": db_form.id},
+                    metadata={
+                        "form_id": db_form.id,
+                        "form_name": form_data.form_name
+                    }
+                )
+            except Exception as lf_error:
+                print(f"[WARNING] Langfuse tracking failed: {lf_error}")
+        
         return {
             "id": db_form.id,
             "form_name": db_form.form_name,
@@ -337,6 +477,23 @@ async def update_form(form_id: int, form_data: FormDataUpdate, db: Session = Dep
         
         db.commit()
         db.refresh(form)
+        
+        # Track form update
+        if langfuse_client:
+            update_data = form_data.model_dump(exclude_unset=True)
+            try:
+                langfuse_client.create_event(
+                    name="form_updated",
+                    input={"form_id": form_id, "updates": update_data},
+                    output={"success": True},
+                    metadata={
+                        "form_id": form_id,
+                        "updated_fields": list(update_data.keys())
+                    }
+                )
+            except Exception as lf_error:
+                print(f"[WARNING] Langfuse tracking failed: {lf_error}")
+        
         return serialize_form(form)
     except HTTPException:
         raise
@@ -352,8 +509,25 @@ async def delete_form(form_id: int, db: Session = Depends(get_db)):
         if not form:
             raise HTTPException(status_code=404, detail=f"Form with id {form_id} not found")
         
+        form_name = form.form_name
         db.delete(form)
         db.commit()
+        
+        # Track form deletion
+        if langfuse_client:
+            try:
+                langfuse_client.create_event(
+                    name="form_deleted",
+                    input={"form_id": form_id},
+                    output={"success": True},
+                    metadata={
+                        "form_id": form_id,
+                        "success": True
+                    }
+                )
+            except Exception as lf_error:
+                print(f"[WARNING] Langfuse tracking failed: {lf_error}")
+        
         return {"message": f"Form with id {form_id} deleted successfully"}
     except HTTPException:
         raise

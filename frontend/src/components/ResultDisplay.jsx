@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTracking } from '../hooks/useTracking'
 import './ResultDisplay.css'
 
 const ResultDisplay = ({ result, onReset, onNavigateToForms }) => {
@@ -6,6 +7,7 @@ const ResultDisplay = ({ result, onReset, onNavigateToForms }) => {
   const [expandedKeys, setExpandedKeys] = useState(new Set())
   const [showRawJson, setShowRawJson] = useState(false)
   const [viewMode, setViewMode] = useState('json')
+  const { trackViewModeChange, trackDownload, trackEvent } = useTracking()
 
   const handleCopy = async () => {
     try {
@@ -13,6 +15,12 @@ const ResultDisplay = ({ result, onReset, onNavigateToForms }) => {
       await navigator.clipboard.writeText(jsonString)
       setCopied(true)
       setTimeout(() => setCopied(false), 2500)
+
+      // Track copy action
+      trackEvent('copy', {
+        content_type: 'json',
+        data_size: jsonString.length,
+      })
     } catch (err) {
       console.error('Failed to copy:', err)
       alert('Failed to copy to clipboard')
@@ -31,6 +39,12 @@ const ResultDisplay = ({ result, onReset, onNavigateToForms }) => {
       link.click()
       document.body.removeChild(link)
       URL.revokeObjectURL(url)
+
+      // Track download
+      trackDownload('json', {
+        filename: result.filename,
+        size: jsonString.length,
+      })
     } catch (err) {
       console.error('Failed to download:', err)
       alert('Failed to download JSON')
@@ -65,7 +79,7 @@ const ResultDisplay = ({ result, onReset, onNavigateToForms }) => {
 
   const getTableData = () => {
     if (Array.isArray(result.extracted_data)) {
-      return result.extracted_data.map(item => 
+      return result.extracted_data.map(item =>
         typeof item === 'object' ? flattenDict(item) : { value: item }
       )
     } else if (typeof result.extracted_data === 'object') {
@@ -81,7 +95,7 @@ const ResultDisplay = ({ result, onReset, onNavigateToForms }) => {
         alert('No data to download')
         return
       }
-      
+
       const allKeys = []
       tableData.forEach(row => {
         Object.keys(row).forEach(key => {
@@ -109,6 +123,13 @@ const ResultDisplay = ({ result, onReset, onNavigateToForms }) => {
       link.click()
       document.body.removeChild(link)
       URL.revokeObjectURL(url)
+
+      // Track download
+      trackDownload('csv', {
+        filename: result.filename,
+        rows: tableData.length,
+        columns: allKeys.length,
+      })
     } catch (err) {
       console.error('Failed to download:', err)
       alert('Failed to download CSV')
@@ -232,15 +253,27 @@ const ResultDisplay = ({ result, onReset, onNavigateToForms }) => {
           <h3>📊 Extraction Results</h3>
           <div className="json-actions">
             <div className="view-buttons">
-              <button 
-                onClick={() => setViewMode('json')} 
+              <button
+                onClick={() => {
+                  const newMode = 'json'
+                  if (viewMode !== newMode) {
+                    trackViewModeChange(viewMode, newMode)
+                  }
+                  setViewMode(newMode)
+                }}
                 className={`btn-view ${viewMode === 'json' ? 'active' : ''}`}
                 title="View as JSON"
               >
                 📄 JSON View
               </button>
-              <button 
-                onClick={() => setViewMode('table')} 
+              <button
+                onClick={() => {
+                  const newMode = 'table'
+                  if (viewMode !== newMode) {
+                    trackViewModeChange(viewMode, newMode)
+                  }
+                  setViewMode(newMode)
+                }}
                 className={`btn-view ${viewMode === 'table' ? 'active' : ''}`}
                 title="View as Table"
               >
@@ -250,7 +283,12 @@ const ResultDisplay = ({ result, onReset, onNavigateToForms }) => {
             <div className="download-buttons">
               {viewMode === 'json' && (
                 <>
-                  <button onClick={() => setShowRawJson(!showRawJson)} className="btn-toggle-view" title="Toggle between formatted and raw JSON">
+                  <button onClick={() => {
+                    setShowRawJson(!showRawJson)
+                    trackEvent('toggle_raw_json', {
+                      new_state: !showRawJson ? 'raw' : 'formatted',
+                    })
+                  }} className="btn-toggle-view" title="Toggle between formatted and raw JSON">
                     {showRawJson ? '🎨 Formatted' : '📄 Raw JSON'}
                   </button>
                   <button onClick={handleCopy} className={`btn-copy ${copied ? 'copied' : ''}`}>
