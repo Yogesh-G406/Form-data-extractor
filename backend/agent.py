@@ -59,6 +59,11 @@ class HandwritingExtractionAgent:
         """Enhance image quality for better OCR accuracy"""
         img = Image.open(image_path)
         
+        # Ensure image is not too small before processing
+        width, height = img.size
+        if width < 28 or height < 28:
+            img = img.resize((max(28, width), max(28, height)))
+        
         # Convert to RGB if needed
         if img.mode != 'RGB':
             img = img.convert('RGB')
@@ -98,8 +103,23 @@ class HandwritingExtractionAgent:
                 with open(image_path, "rb") as image_file:
                     image_bytes = image_file.read()
         else:
-            with open(image_path, "rb") as image_file:
-                image_bytes = image_file.read()
+            # Ensure image is not too small (causes issues with some models)
+            try:
+                with Image.open(image_path) as img:
+                    width, height = img.size
+                    if width < 28 or height < 28:
+                        # Resize to minimum supported size
+                        img = img.resize((max(28, width), max(28, height)))
+                        buffer = io.BytesIO()
+                        img.save(buffer, format='JPEG')
+                        image_bytes = buffer.getvalue()
+                    else:
+                        with open(image_path, "rb") as image_file:
+                            image_bytes = image_file.read()
+            except Exception as e:
+                print(f"[WARNING] Image size check failed: {e}")
+                with open(image_path, "rb") as image_file:
+                    image_bytes = image_file.read()
         
         return base64.b64encode(image_bytes).decode('utf-8')
     
@@ -128,8 +148,8 @@ class HandwritingExtractionAgent:
             img = Image.open(image_path)
             image_size = {"width": img.width, "height": img.height}
             
-            with open(image_path, "rb") as image_file:
-                image_data = base64.standard_b64encode(image_file.read()).decode("utf-8")
+            # Use encode_image to handle resizing/preprocessing
+            image_data = self.encode_image(image_path)
             
             prompt = f"""You are an expert OCR system specialized in reading handwritten text with maximum accuracy.
 

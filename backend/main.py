@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -44,8 +44,7 @@ class FormDataResponse(BaseModel):
     created_at: str
     updated_at: str
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -359,7 +358,9 @@ async def upload_file(file: UploadFile = File(...), language: str = "English", d
                 media_type="application/json"
             )
         else:
-            raise HTTPException(status_code=500, detail=result.get("error", "Extraction failed"))
+            error_msg = result.get("error", "Extraction failed")
+            status_code = 503 if "not initialized" in error_msg else 500
+            raise HTTPException(status_code=status_code, detail=error_msg)
             
     except HTTPException:
         raise

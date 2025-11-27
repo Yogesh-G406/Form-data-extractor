@@ -2,6 +2,7 @@
   "name": "handwriting-extraction-tests",
   "version": "1.0.0",
   "description": "Test suite for Handwriting Extraction AI",
+  "type": "module",
   "scripts": {
     "test": "playwright test",
     "test:frontend": "playwright test tests/frontend",

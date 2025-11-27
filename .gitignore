@@ -65,3 +65,5 @@ build/
 
 # Logs
 *.log
+
+/lanfuse_server/**
